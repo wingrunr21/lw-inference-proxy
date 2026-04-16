@@ -1,0 +1,10 @@
+{
+  "enabledPlugins": {
+    "cc-skills-golang@samber": true
+  },
+  "permissions": {
+    "allow": [
+      "Bash(go build:*)"
+    ]
+  }
+}
