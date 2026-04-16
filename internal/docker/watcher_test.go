@@ -12,9 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/events"
-	dockernet "github.com/docker/docker/api/types/network"
+	"net/netip"
+
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/events"
+	dockernet "github.com/moby/moby/api/types/network"
+	dockerclient "github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
@@ -49,22 +52,22 @@ func newFakeClient() *fakeDockerClient {
 	}
 }
 
-func (f *fakeDockerClient) Events(_ context.Context, _ events.ListOptions) (<-chan events.Message, <-chan error) {
-	return f.eventCh, f.errCh
+func (f *fakeDockerClient) Events(_ context.Context, _ dockerclient.EventsListOptions) dockerclient.EventsResult {
+	return dockerclient.EventsResult{Messages: f.eventCh, Err: f.errCh}
 }
 
-func (f *fakeDockerClient) ContainerList(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
-	return f.containers, nil
+func (f *fakeDockerClient) ContainerList(_ context.Context, _ dockerclient.ContainerListOptions) (dockerclient.ContainerListResult, error) {
+	return dockerclient.ContainerListResult{Items: f.containers}, nil
 }
 
-func (f *fakeDockerClient) ContainerInspect(_ context.Context, id string) (container.InspectResponse, error) {
+func (f *fakeDockerClient) ContainerInspect(_ context.Context, id string, _ dockerclient.ContainerInspectOptions) (dockerclient.ContainerInspectResult, error) {
 	if err, ok := f.inspectErr[id]; ok {
-		return container.InspectResponse{}, err
+		return dockerclient.ContainerInspectResult{}, err
 	}
 	if resp, ok := f.inspects[id]; ok {
-		return resp, nil
+		return dockerclient.ContainerInspectResult{Container: resp}, nil
 	}
-	return container.InspectResponse{}, fmt.Errorf("container not found: %s", id)
+	return dockerclient.ContainerInspectResult{}, fmt.Errorf("container not found: %s", id)
 }
 
 // ---------------------------------------------------------------------------
@@ -121,15 +124,13 @@ func makeRetryBackend(t *testing.T, failCount int32, modelID string) *httptest.S
 }
 
 // makeInspect builds a container.InspectResponse suitable for watcher tests.
-func makeInspect(id, name, ip, port, healthStatus string) container.InspectResponse {
+func makeInspect(id, name, ip, port string, healthStatus container.HealthStatus) container.InspectResponse {
 	return container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			ID:   id,
-			Name: "/" + name,
-			State: &container.State{
-				Health: &container.Health{
-					Status: healthStatus,
-				},
+		ID:   id,
+		Name: "/" + name,
+		State: &container.State{
+			Health: &container.Health{
+				Status: healthStatus,
 			},
 		},
 		Config: &container.Config{
@@ -140,7 +141,7 @@ func makeInspect(id, name, ip, port, healthStatus string) container.InspectRespo
 		},
 		NetworkSettings: &container.NetworkSettings{
 			Networks: map[string]*dockernet.EndpointSettings{
-				"bridge": {IPAddress: ip},
+				"bridge": {IPAddress: netip.MustParseAddr(ip)},
 			},
 		},
 	}
@@ -149,12 +150,10 @@ func makeInspect(id, name, ip, port, healthStatus string) container.InspectRespo
 // makeInspectNoHealthcheck builds an inspect response without a Health field.
 func makeInspectNoHealthcheck(id, name string) container.InspectResponse {
 	return container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			ID:   id,
-			Name: "/" + name,
-			State: &container.State{
-				Health: nil,
-			},
+		ID:   id,
+		Name: "/" + name,
+		State: &container.State{
+			Health: nil,
 		},
 		Config: &container.Config{
 			Labels: map[string]string{labelEnable: "true"},
@@ -194,7 +193,7 @@ func TestScanExisting_RegistersHealthyContainer(t *testing.T) {
 
 	fake := newFakeClient()
 	fake.containers = []container.Summary{{ID: cid}}
-	fake.inspects[cid] = makeInspect(cid, "llama-server", ip, port, "healthy")
+	fake.inspects[cid] = makeInspect(cid, "llama-server", ip, port, container.Healthy)
 
 	r := router.New()
 	w := newTestWatcher(fake, r)
@@ -224,7 +223,7 @@ func TestScanExisting_SkipsUnhealthyContainer(t *testing.T) {
 
 	fake := newFakeClient()
 	fake.containers = []container.Summary{{ID: cid}}
-	fake.inspects[cid] = makeInspect(cid, "sick-server", "127.0.0.1", "8000", "unhealthy")
+	fake.inspects[cid] = makeInspect(cid, "sick-server", "127.0.0.1", "8000", container.Unhealthy)
 
 	r := router.New()
 	w := newTestWatcher(fake, r)
@@ -243,9 +242,9 @@ func TestScanExisting_MultipleContainers(t *testing.T) {
 		{ID: "ctr2"},
 		{ID: "ctr3"},
 	}
-	fake.inspects["ctr1"] = makeInspect("ctr1", "server-a", ip1, port1, "healthy")
-	fake.inspects["ctr2"] = makeInspect("ctr2", "server-b", ip2, port2, "healthy")
-	fake.inspects["ctr3"] = makeInspect("ctr3", "server-c", "127.0.0.1", "9999", "starting")
+	fake.inspects["ctr1"] = makeInspect("ctr1", "server-a", ip1, port1, container.Healthy)
+	fake.inspects["ctr2"] = makeInspect("ctr2", "server-b", ip2, port2, container.Healthy)
+	fake.inspects["ctr3"] = makeInspect("ctr3", "server-c", "127.0.0.1", "9999", container.Starting)
 
 	r := router.New()
 	w := newTestWatcher(fake, r)
@@ -269,7 +268,7 @@ func TestHandleEvent_HealthyRegistersBackend(t *testing.T) {
 	_, ip, port := makeBackend(t, modelID)
 
 	fake := newFakeClient()
-	fake.inspects[cid] = makeInspect(cid, "gpt-server", ip, port, "healthy")
+	fake.inspects[cid] = makeInspect(cid, "gpt-server", ip, port, container.Healthy)
 
 	r := router.New()
 	w := newTestWatcher(fake, r)
@@ -294,7 +293,7 @@ func TestHandleEvent_UnhealthyDeregistersBackend(t *testing.T) {
 	_, ip, port := makeBackend(t, modelID)
 
 	fake := newFakeClient()
-	fake.inspects[cid] = makeInspect(cid, "gpt-server", ip, port, "healthy")
+	fake.inspects[cid] = makeInspect(cid, "gpt-server", ip, port, container.Healthy)
 
 	r := router.New()
 	w := newTestWatcher(fake, r)
@@ -322,7 +321,7 @@ func TestHandleEvent_StopDeregistersBackend(t *testing.T) {
 	_, ip, port := makeBackend(t, modelID)
 
 	fake := newFakeClient()
-	fake.inspects[cid] = makeInspect(cid, "llama-server", ip, port, "healthy")
+	fake.inspects[cid] = makeInspect(cid, "llama-server", ip, port, container.Healthy)
 
 	r := router.New()
 	w := newTestWatcher(fake, r)
@@ -348,7 +347,7 @@ func TestHandleEvent_DieRemovesImmediately(t *testing.T) {
 	_, ip, port := makeBackend(t, modelID)
 
 	fake := newFakeClient()
-	fake.inspects[cid] = makeInspect(cid, "llama-server", ip, port, "healthy")
+	fake.inspects[cid] = makeInspect(cid, "llama-server", ip, port, container.Healthy)
 
 	r := router.New()
 	w := newTestWatcher(fake, r)
@@ -373,8 +372,8 @@ func TestHandleEvent_ModelCollisionNewContainerWins(t *testing.T) {
 	_, ip2, port2 := makeBackend(t, modelID)
 
 	fake := newFakeClient()
-	fake.inspects["ctr1"] = makeInspect("ctr1", "server-1", ip1, port1, "healthy")
-	fake.inspects["ctr2"] = makeInspect("ctr2", "server-2", ip2, port2, "healthy")
+	fake.inspects["ctr1"] = makeInspect("ctr1", "server-1", ip1, port1, container.Healthy)
+	fake.inspects["ctr2"] = makeInspect("ctr2", "server-2", ip2, port2, container.Healthy)
 
 	r := router.New()
 	w := newTestWatcher(fake, r)
@@ -446,10 +445,10 @@ func TestFetchModel_FailsAfterAllRetries(t *testing.T) {
 
 func TestContainerIP_ReturnsFirstNonEmptyIP(t *testing.T) {
 	inspect := container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{ID: "abc"},
+		ID: "abc",
 		NetworkSettings: &container.NetworkSettings{
 			Networks: map[string]*dockernet.EndpointSettings{
-				"bridge": {IPAddress: "10.0.0.5"},
+				"bridge": {IPAddress: netip.MustParseAddr("10.0.0.5")},
 			},
 		},
 	}
@@ -460,23 +459,19 @@ func TestContainerIP_ReturnsFirstNonEmptyIP(t *testing.T) {
 
 func TestContainerIP_ErrorWhenNoNetworks(t *testing.T) {
 	inspect := container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{ID: "abc"},
-		NetworkSettings:   &container.NetworkSettings{},
+		ID:              "abc",
+		NetworkSettings: &container.NetworkSettings{},
 	}
 	_, err := containerIP(inspect)
 	assert.Error(t, err)
 }
 
 func TestContainerName_StripLeadingSlash(t *testing.T) {
-	inspect := container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{Name: "/my-container"},
-	}
+	inspect := container.InspectResponse{Name: "/my-container"}
 	assert.Equal(t, "my-container", containerName(inspect))
 }
 
 func TestContainerName_NoSlash(t *testing.T) {
-	inspect := container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{Name: "my-container"},
-	}
+	inspect := container.InspectResponse{Name: "my-container"}
 	assert.Equal(t, "my-container", containerName(inspect))
 }

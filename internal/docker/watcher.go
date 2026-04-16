@@ -9,10 +9,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/events"
-	"github.com/docker/docker/api/types/filters"
-	dockerclient "github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/events"
+	dockerclient "github.com/moby/moby/client"
 
 	"github.com/wingrunr21/lw-inference-proxy/internal/config"
 	"github.com/wingrunr21/lw-inference-proxy/internal/router"
@@ -33,9 +32,9 @@ const (
 // dockerClient is the subset of the Docker API used by Watcher.
 // *dockerclient.Client satisfies this interface.
 type dockerClient interface {
-	Events(ctx context.Context, opts events.ListOptions) (<-chan events.Message, <-chan error)
-	ContainerList(ctx context.Context, opts container.ListOptions) ([]container.Summary, error)
-	ContainerInspect(ctx context.Context, id string) (container.InspectResponse, error)
+	Events(ctx context.Context, opts dockerclient.EventsListOptions) dockerclient.EventsResult
+	ContainerList(ctx context.Context, opts dockerclient.ContainerListOptions) (dockerclient.ContainerListResult, error)
+	ContainerInspect(ctx context.Context, id string, opts dockerclient.ContainerInspectOptions) (dockerclient.ContainerInspectResult, error)
 }
 
 // Watcher subscribes to the Docker event stream and keeps the routing table
@@ -65,14 +64,13 @@ func NewWatcher(cfg *config.Config, r *router.Router) (*Watcher, error) {
 
 // Run starts the event loop. Blocks until ctx is cancelled.
 func (w *Watcher) Run(ctx context.Context) {
-	f := filters.NewArgs(
-		filters.Arg("type", "container"),
-		filters.Arg("label", labelEnable+"=true"),
-	)
+	f := make(dockerclient.Filters).
+		Add("type", "container").
+		Add("label", labelEnable+"=true")
 
 	for {
 		// Subscribe before scanning so no events are missed during the scan.
-		eventCh, errCh := w.cli.Events(ctx, events.ListOptions{Filters: f})
+		evResult := w.cli.Events(ctx, dockerclient.EventsListOptions{Filters: f})
 
 		w.scanExisting(ctx)
 
@@ -81,13 +79,13 @@ func (w *Watcher) Run(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
-			case err := <-errCh:
+			case err := <-evResult.Err:
 				if ctx.Err() != nil {
 					return
 				}
 				slog.Error("docker event stream error, reconnecting in 5s", "error", err)
 				reconnect = true
-			case ev := <-eventCh:
+			case ev := <-evResult.Messages:
 				w.handleEvent(ctx, ev)
 			}
 		}
@@ -101,26 +99,27 @@ func (w *Watcher) Run(ctx context.Context) {
 }
 
 func (w *Watcher) scanExisting(ctx context.Context) {
-	containers, err := w.cli.ContainerList(ctx, container.ListOptions{
-		Filters: filters.NewArgs(filters.Arg("label", labelEnable+"=true")),
+	listResult, err := w.cli.ContainerList(ctx, dockerclient.ContainerListOptions{
+		Filters: make(dockerclient.Filters).Add("label", labelEnable+"=true"),
 	})
 	if err != nil {
 		slog.Error("failed to list existing containers", "error", err)
 		return
 	}
 
-	for _, c := range containers {
-		inspect, err := w.cli.ContainerInspect(ctx, c.ID)
+	for _, c := range listResult.Items {
+		ir, err := w.cli.ContainerInspect(ctx, c.ID, dockerclient.ContainerInspectOptions{})
 		if err != nil {
 			slog.Error("failed to inspect container", "container", shortID(c.ID), "error", err)
 			continue
 		}
+		inspect := ir.Container
 		if inspect.State.Health == nil {
 			slog.Warn("container has inference.enable=true but no HEALTHCHECK defined — skipping",
 				"container", containerName(inspect))
 			continue
 		}
-		if inspect.State.Health.Status == "healthy" {
+		if inspect.State.Health.Status == container.Healthy {
 			w.register(ctx, inspect)
 		}
 	}
@@ -131,13 +130,13 @@ func (w *Watcher) handleEvent(ctx context.Context, ev events.Message) {
 	case "health_status":
 		switch ev.Actor.Attributes["health_status"] {
 		case "healthy":
-			inspect, err := w.cli.ContainerInspect(ctx, ev.Actor.ID)
+			ir, err := w.cli.ContainerInspect(ctx, ev.Actor.ID, dockerclient.ContainerInspectOptions{})
 			if err != nil {
 				slog.Error("failed to inspect container on health event",
 					"container", shortID(ev.Actor.ID), "error", err)
 				return
 			}
-			w.register(ctx, inspect)
+			w.register(ctx, ir.Container)
 		case "unhealthy":
 			w.deregister(ev.Actor.ID, "unhealthy")
 		}
@@ -308,8 +307,8 @@ func (w *Watcher) fetchModel(ctx context.Context, backendURL, basePath string) (
 
 func containerIP(inspect container.InspectResponse) (string, error) {
 	for _, ep := range inspect.NetworkSettings.Networks {
-		if ep.IPAddress != "" {
-			return ep.IPAddress, nil
+		if ep.IPAddress.IsValid() {
+			return ep.IPAddress.String(), nil
 		}
 	}
 	return "", fmt.Errorf("no network endpoint with IP found for container %s", shortID(inspect.ID))
