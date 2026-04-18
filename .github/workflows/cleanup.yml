@@ -5,6 +5,7 @@ on:
     # Run daily at 04:00 UTC, after nightly builds have settled
     - cron: '0 4 * * *'
   workflow_dispatch:
+  workflow_dispatch:
 
 jobs:
   cleanup:
@@ -18,10 +19,15 @@ jobs:
         with:
           package-name: lw-inference-proxy
           package-type: container
-          # Keep the 10 most recent versions that are not pinned semver tags.
-          # The filter matches short-SHA tags (7 hex chars) and the "nightly" tag
-          # is excluded from deletion because it is continuously overwritten and
-          # has no unique version to match here — only the accumulating SHA tags
-          # need pruning.
+          # Keep the 10 most recent nightly-<sha> tagged versions.
+          # Semver releases, the moving "nightly" tag, and "latest" are excluded.
           min-versions-to-keep: 10
-          ignore-versions: '^(v\d+.*|nightly|latest)$'
+          ignore-versions: '^(v\d+.*|nightly$|nightly-[0-9a-f]{7}.*|latest)$'
+
+      - name: Delete untagged platform manifests
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5
+        with:
+          package-name: lw-inference-proxy
+          package-type: container
+          delete-only-untagged-versions: true
+          min-versions-to-keep: 0
