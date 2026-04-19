@@ -127,26 +127,37 @@ func (w *Watcher) scanExisting(ctx context.Context) {
 
 func (w *Watcher) handleEvent(ctx context.Context, ev events.Message) {
 	switch ev.Action {
-	case "health_status":
-		switch ev.Actor.Attributes["health_status"] {
-		case "healthy":
-			ir, err := w.cli.ContainerInspect(ctx, ev.Actor.ID, dockerclient.ContainerInspectOptions{})
-			if err != nil {
-				slog.Error("failed to inspect container on health event",
-					"container", shortID(ev.Actor.ID), "error", err)
-				return
-			}
-			w.register(ctx, ir.Container)
-		case "unhealthy":
-			w.deregister(ev.Actor.ID, "unhealthy")
-		}
+	case events.ActionHealthStatus:
+		// Docker API 1.45+: status is in actor attributes.
+		w.handleHealthStatus(ctx, ev.Actor.ID, ev.Actor.Attributes["health_status"])
 
-	case "stop", "kill":
+	case events.ActionHealthStatusHealthy:
+		w.handleHealthStatus(ctx, ev.Actor.ID, "healthy")
+
+	case events.ActionHealthStatusUnhealthy:
+		w.handleHealthStatus(ctx, ev.Actor.ID, "unhealthy")
+
+	case events.ActionStop, events.ActionKill:
 		w.deregister(ev.Actor.ID, string(ev.Action))
 
-	case "die":
+	case events.ActionDie:
 		// Process has exited — remove immediately without waiting for drain.
 		w.deregisterImmediate(ev.Actor.ID)
+	}
+}
+
+func (w *Watcher) handleHealthStatus(ctx context.Context, containerID, status string) {
+	switch status {
+	case "healthy":
+		ir, err := w.cli.ContainerInspect(ctx, containerID, dockerclient.ContainerInspectOptions{})
+		if err != nil {
+			slog.Error("failed to inspect container on health event",
+				"container", shortID(containerID), "error", err)
+			return
+		}
+		w.register(ctx, ir.Container)
+	case "unhealthy":
+		w.deregister(containerID, "unhealthy")
 	}
 }
 

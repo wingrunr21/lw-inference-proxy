@@ -273,7 +273,7 @@ func TestHandleEvent_HealthyRegistersBackend(t *testing.T) {
 	r := router.New()
 	w := newTestWatcher(fake, r)
 	w.handleEvent(context.Background(), events.Message{
-		Action: "health_status",
+		Action: events.ActionHealthStatus,
 		Actor: events.Actor{
 			ID:         cid,
 			Attributes: map[string]string{"health_status": "healthy"},
@@ -283,6 +283,53 @@ func TestHandleEvent_HealthyRegistersBackend(t *testing.T) {
 	entry := r.Get(modelID)
 	require.NotNil(t, entry)
 	assert.Equal(t, cid, entry.ContainerID)
+}
+
+func TestHandleEvent_HealthyRegistersBackend_OldActionFormat(t *testing.T) {
+	const (
+		cid     = "ctr1"
+		modelID = "gpt-4"
+	)
+	_, ip, port := makeBackend(t, modelID)
+
+	fake := newFakeClient()
+	fake.inspects[cid] = makeInspect(cid, "gpt-server", ip, port, container.Healthy)
+
+	r := router.New()
+	w := newTestWatcher(fake, r)
+	w.handleEvent(context.Background(), events.Message{
+		Action: events.ActionHealthStatusHealthy,
+		Actor:  events.Actor{ID: cid},
+	})
+
+	entry := r.Get(modelID)
+	require.NotNil(t, entry)
+	assert.Equal(t, cid, entry.ContainerID)
+}
+
+func TestHandleEvent_UnhealthyDeregistersBackend_OldActionFormat(t *testing.T) {
+	const (
+		cid     = "ctr1"
+		modelID = "gpt-4"
+	)
+	_, ip, port := makeBackend(t, modelID)
+
+	fake := newFakeClient()
+	fake.inspects[cid] = makeInspect(cid, "gpt-server", ip, port, container.Healthy)
+
+	r := router.New()
+	w := newTestWatcher(fake, r)
+	w.handleEvent(context.Background(), events.Message{
+		Action: events.ActionHealthStatusHealthy,
+		Actor:  events.Actor{ID: cid},
+	})
+	require.NotNil(t, r.Get(modelID))
+
+	w.handleEvent(context.Background(), events.Message{
+		Action: events.ActionHealthStatusUnhealthy,
+		Actor:  events.Actor{ID: cid},
+	})
+	waitForRemoval(t, r, modelID)
 }
 
 func TestHandleEvent_UnhealthyDeregistersBackend(t *testing.T) {
@@ -299,14 +346,14 @@ func TestHandleEvent_UnhealthyDeregistersBackend(t *testing.T) {
 	w := newTestWatcher(fake, r)
 	// Register first.
 	w.handleEvent(context.Background(), events.Message{
-		Action: "health_status",
+		Action: events.ActionHealthStatus,
 		Actor:  events.Actor{ID: cid, Attributes: map[string]string{"health_status": "healthy"}},
 	})
 	require.NotNil(t, r.Get(modelID))
 
 	// Deregister via unhealthy event (spawns drain goroutine).
 	w.handleEvent(context.Background(), events.Message{
-		Action: "health_status",
+		Action: events.ActionHealthStatus,
 		Actor:  events.Actor{ID: cid, Attributes: map[string]string{"health_status": "unhealthy"}},
 	})
 
@@ -326,13 +373,13 @@ func TestHandleEvent_StopDeregistersBackend(t *testing.T) {
 	r := router.New()
 	w := newTestWatcher(fake, r)
 	w.handleEvent(context.Background(), events.Message{
-		Action: "health_status",
+		Action: events.ActionHealthStatus,
 		Actor:  events.Actor{ID: cid, Attributes: map[string]string{"health_status": "healthy"}},
 	})
 	require.NotNil(t, r.Get(modelID))
 
 	w.handleEvent(context.Background(), events.Message{
-		Action: "stop",
+		Action: events.ActionStop,
 		Actor:  events.Actor{ID: cid},
 	})
 
@@ -352,14 +399,14 @@ func TestHandleEvent_DieRemovesImmediately(t *testing.T) {
 	r := router.New()
 	w := newTestWatcher(fake, r)
 	w.handleEvent(context.Background(), events.Message{
-		Action: "health_status",
+		Action: events.ActionHealthStatus,
 		Actor:  events.Actor{ID: cid, Attributes: map[string]string{"health_status": "healthy"}},
 	})
 	require.NotNil(t, r.Get(modelID))
 
 	// "die" removes immediately without draining.
 	w.handleEvent(context.Background(), events.Message{
-		Action: "die",
+		Action: events.ActionDie,
 		Actor:  events.Actor{ID: cid},
 	})
 
@@ -379,14 +426,14 @@ func TestHandleEvent_ModelCollisionNewContainerWins(t *testing.T) {
 	w := newTestWatcher(fake, r)
 
 	w.handleEvent(context.Background(), events.Message{
-		Action: "health_status",
+		Action: events.ActionHealthStatus,
 		Actor:  events.Actor{ID: "ctr1", Attributes: map[string]string{"health_status": "healthy"}},
 	})
 	require.NotNil(t, r.Get(modelID))
 
 	// Second container with same model name — new one wins.
 	w.handleEvent(context.Background(), events.Message{
-		Action: "health_status",
+		Action: events.ActionHealthStatus,
 		Actor:  events.Actor{ID: "ctr2", Attributes: map[string]string{"health_status": "healthy"}},
 	})
 
