@@ -87,13 +87,17 @@ func newTestWatcher(cli dockerClient, r *router.Router) *Watcher {
 	}
 }
 
-// makeBackend starts an httptest server that serves a single model entry on
+// makeBackend starts an httptest server that serves the given model IDs on
 // GET <basePath>/models. Returns the server, its IP, and its port.
-func makeBackend(t *testing.T, modelID string) (srv *httptest.Server, ip, port string) {
+func makeBackend(t *testing.T, modelIDs ...string) (srv *httptest.Server, ip, port string) {
 	t.Helper()
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entries := make([]map[string]string, len(modelIDs))
+		for i, id := range modelIDs {
+			entries[i] = map[string]string{"id": id}
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			"data": []map[string]string{{"id": modelID}},
+			"data": entries,
 		})
 	}))
 	t.Cleanup(srv.Close)
@@ -443,6 +447,78 @@ func TestHandleEvent_ModelCollisionNewContainerWins(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// multi-model tests
+// ---------------------------------------------------------------------------
+
+func TestScanExisting_RegistersAllModelsFromContainer(t *testing.T) {
+	const cid = "abc123"
+	_, ip, port := makeBackend(t, "model-a", "model-b", "model-c")
+
+	fake := newFakeClient()
+	fake.containers = []container.Summary{{ID: cid}}
+	fake.inspects[cid] = makeInspect(cid, "multi-server", ip, port, container.Healthy)
+
+	r := router.New()
+	w := newTestWatcher(fake, r)
+	w.scanExisting(context.Background())
+
+	assert.Equal(t, 3, r.Count())
+	assert.NotNil(t, r.Get("model-a"))
+	assert.NotNil(t, r.Get("model-b"))
+	assert.NotNil(t, r.Get("model-c"))
+	assert.Equal(t, cid, r.Get("model-a").ContainerID)
+	assert.Equal(t, cid, r.Get("model-b").ContainerID)
+	assert.Equal(t, cid, r.Get("model-c").ContainerID)
+}
+
+func TestHandleEvent_MultiModelContainerRegistersAll(t *testing.T) {
+	const cid = "ctr1"
+	_, ip, port := makeBackend(t, "alpha", "beta")
+
+	fake := newFakeClient()
+	fake.inspects[cid] = makeInspect(cid, "multi-server", ip, port, container.Healthy)
+
+	r := router.New()
+	w := newTestWatcher(fake, r)
+	w.handleEvent(context.Background(), events.Message{
+		Action: events.ActionHealthStatus,
+		Actor:  events.Actor{ID: cid, Attributes: map[string]string{"health_status": "healthy"}},
+	})
+
+	assert.Equal(t, 2, r.Count())
+	require.NotNil(t, r.Get("alpha"))
+	require.NotNil(t, r.Get("beta"))
+	assert.Equal(t, cid, r.Get("alpha").ContainerID)
+	assert.Equal(t, cid, r.Get("beta").ContainerID)
+}
+
+func TestHandleEvent_MultiModelContainerDeregistersAll(t *testing.T) {
+	const cid = "ctr1"
+	_, ip, port := makeBackend(t, "alpha", "beta")
+
+	fake := newFakeClient()
+	fake.inspects[cid] = makeInspect(cid, "multi-server", ip, port, container.Healthy)
+
+	r := router.New()
+	w := newTestWatcher(fake, r)
+
+	w.handleEvent(context.Background(), events.Message{
+		Action: events.ActionHealthStatus,
+		Actor:  events.Actor{ID: cid, Attributes: map[string]string{"health_status": "healthy"}},
+	})
+	require.Equal(t, 2, r.Count())
+
+	w.handleEvent(context.Background(), events.Message{
+		Action: events.ActionStop,
+		Actor:  events.Actor{ID: cid},
+	})
+
+	waitForRemoval(t, r, "alpha")
+	waitForRemoval(t, r, "beta")
+	assert.Equal(t, 0, r.Count())
+}
+
+// ---------------------------------------------------------------------------
 // fetchModel retry tests
 // ---------------------------------------------------------------------------
 
@@ -460,11 +536,12 @@ func TestFetchModel_RetriesOnServerError(t *testing.T) {
 	r := router.New()
 	w := newTestWatcher(fake, r)
 
-	id, obj, err := w.fetchModelWithRetry(context.Background(), "http://"+host+":"+port, "/")
+	ids, objs, err := w.fetchModelWithRetry(context.Background(), "http://"+host+":"+port, "/")
 
 	require.NoError(t, err)
-	assert.Equal(t, modelID, id)
-	assert.NotEmpty(t, obj)
+	require.Len(t, ids, 1)
+	assert.Equal(t, modelID, ids[0])
+	assert.NotEmpty(t, objs[0])
 }
 
 func TestFetchModel_FailsAfterAllRetries(t *testing.T) {

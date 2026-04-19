@@ -173,34 +173,36 @@ func (w *Watcher) register(ctx context.Context, inspect container.InspectRespons
 	}
 
 	backendURL := fmt.Sprintf("http://%s:%s", ip, port)
-	modelID, modelObj, err := w.fetchModelWithRetry(ctx, backendURL, basePath)
+	modelIDs, modelObjs, err := w.fetchModelWithRetry(ctx, backendURL, basePath)
 	if err != nil {
-		slog.Error("failed to fetch model from backend",
+		slog.Error("failed to fetch models from backend",
 			"container", containerName(inspect), "url", backendURL, "error", err)
 		return
 	}
 
-	entry := &router.BackendEntry{
-		ContainerID: inspect.ID,
-		BackendURL:  backendURL,
-		BasePath:    basePath,
-		ModelObject: modelObj,
-	}
+	for i, modelID := range modelIDs {
+		entry := &router.BackendEntry{
+			ContainerID: inspect.ID,
+			BackendURL:  backendURL,
+			BasePath:    basePath,
+			ModelObject: modelObjs[i],
+		}
 
-	prev := w.router.Add(modelID, entry)
-	if prev != nil {
-		slog.Warn("model name collision: new container wins",
+		prev := w.router.Add(modelID, entry)
+		if prev != nil {
+			slog.Warn("model name collision: new container wins",
+				"model", modelID,
+				"new_container", containerName(inspect),
+				"displaced_container", shortID(prev.ContainerID),
+			)
+		}
+
+		slog.Info("backend registered",
 			"model", modelID,
-			"new_container", containerName(inspect),
-			"displaced_container", shortID(prev.ContainerID),
+			"container", containerName(inspect),
+			"url", backendURL,
 		)
 	}
-
-	slog.Info("backend registered",
-		"model", modelID,
-		"container", containerName(inspect),
-		"url", backendURL,
-	)
 }
 
 func (w *Watcher) deregister(containerID, reason string) {
@@ -253,67 +255,77 @@ type modelsResponse struct {
 	Data []json.RawMessage `json:"data"`
 }
 
-func (w *Watcher) fetchModelWithRetry(ctx context.Context, backendURL, basePath string) (string, json.RawMessage, error) {
+func (w *Watcher) fetchModelWithRetry(ctx context.Context, backendURL, basePath string) ([]string, []json.RawMessage, error) {
 	var lastErr error
 	for i := range fetchRetries {
 		if i > 0 {
 			select {
 			case <-ctx.Done():
-				return "", nil, ctx.Err()
+				return nil, nil, ctx.Err()
 			case <-time.After(fetchRetryWait):
 			}
 		}
-		id, obj, err := w.fetchModel(ctx, backendURL, basePath)
+		ids, objs, err := w.fetchModel(ctx, backendURL, basePath)
 		if err == nil {
-			return id, obj, nil
+			return ids, objs, nil
 		}
 		lastErr = err
 		slog.Debug("fetchModel attempt failed, retrying",
 			"attempt", i+1, "url", backendURL, "error", err)
 	}
-	return "", nil, lastErr
+	return nil, nil, lastErr
 }
 
-func (w *Watcher) fetchModel(ctx context.Context, backendURL, basePath string) (string, json.RawMessage, error) {
+func (w *Watcher) fetchModel(ctx context.Context, backendURL, basePath string) ([]string, []json.RawMessage, error) {
 	u := backendURL + basePath + "/models"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return "", nil, err
+		return nil, nil, err
 	}
 
 	resp, err := w.http.Do(req)
 	if err != nil {
-		return "", nil, fmt.Errorf("GET %s: %w", u, err)
+		return nil, nil, fmt.Errorf("GET %s: %w", u, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", nil, fmt.Errorf("reading response body: %w", err)
+		return nil, nil, fmt.Errorf("reading response body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, u)
+		return nil, nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, u)
 	}
 
 	var models modelsResponse
 	if err := json.Unmarshal(body, &models); err != nil {
-		return "", nil, fmt.Errorf("parsing models response: %w", err)
+		return nil, nil, fmt.Errorf("parsing models response: %w", err)
 	}
 	if len(models.Data) == 0 {
-		return "", nil, fmt.Errorf("backend returned empty models list")
+		return nil, nil, fmt.Errorf("backend returned empty models list")
 	}
 
-	var m struct {
-		ID string `json:"id"`
+	var ids []string
+	var objs []json.RawMessage
+	for _, raw := range models.Data {
+		var m struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &m); err != nil {
+			slog.Warn("skipping model with unparseable id", "url", u, "error", err)
+			continue
+		}
+		if m.ID == "" {
+			slog.Warn("skipping model with empty id", "url", u)
+			continue
+		}
+		ids = append(ids, m.ID)
+		objs = append(objs, raw)
 	}
-	if err := json.Unmarshal(models.Data[0], &m); err != nil {
-		return "", nil, fmt.Errorf("parsing model id: %w", err)
+	if len(ids) == 0 {
+		return nil, nil, fmt.Errorf("backend returned no parseable models")
 	}
-	if m.ID == "" {
-		return "", nil, fmt.Errorf("model id is empty")
-	}
-
-	return m.ID, models.Data[0], nil
+	return ids, objs, nil
 }
 
 func containerIP(inspect container.InspectResponse) (string, error) {

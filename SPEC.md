@@ -82,9 +82,9 @@ labels:
   inference.api.base_path: "/v1"  # optional, shown for clarity
 ```
 
-No model name is specified. The proxy queries the backend's `/v1/models` endpoint (or
-the configured base path equivalent) to discover the model name after the container
-becomes healthy.
+No model names are specified. The proxy queries the backend's `/v1/models` endpoint (or
+the configured base path equivalent) to discover all model names after the container
+becomes healthy. Every model in the response `data` array is registered.
 
 ### Health Check Requirement
 
@@ -149,8 +149,9 @@ model_id (string) → BackendEntry {
 routing table, the new entry wins (last-in). The displaced entry's in-flight requests
 complete normally. A warning is emitted (log + OTel event).
 
-**Model name source:** The `id` field from `data[0]` in the backend's `/v1/models`
-response is the canonical routing key. This respects operator overrides such as vllm's
+**Model name source:** The `id` field from each entry in the `data` array of the
+backend's `/v1/models` response is the canonical routing key. All models exposed by a
+container are registered. This respects operator overrides such as vllm's
 `--served-model-name`.
 
 ---
