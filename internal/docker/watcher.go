@@ -65,7 +65,7 @@ func NewWatcher(cfg *config.Config, r *router.Router) (*Watcher, error) {
 // Run starts the event loop. Blocks until ctx is cancelled.
 func (w *Watcher) Run(ctx context.Context) {
 	f := make(dockerclient.Filters).
-		Add("type", "container").
+		Add("type", string(events.ContainerEventType)).
 		Add("label", labelEnable+"=true")
 
 	for {
