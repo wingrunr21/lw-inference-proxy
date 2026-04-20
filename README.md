@@ -1,8 +1,10 @@
 # lw-inference-proxy
 
-A zero-config reverse proxy that turns a pile of [vllm](https://github.com/vllm-project/vllm) and
-[sglang](https://github.com/sgl-project/sglang) containers into a single OpenAI/Anthropic-compatible
-API endpoint. Add a container, it appears. Stop a container, it's gone. No restarts, no config files.
+A lightweight, zero-config reverse proxy that turns a pile of OpenAI/Anthropic API compatible inference
+servers (think [vllm](https://github.com/vllm-project/vllm),
+[sglang](https://github.com/sgl-project/sglang), [llama.cpp](https://github.com/ggml-org/llama.cpp))
+into a single OpenAI/Anthropic-compatible API endpoint. Add a container, it appears. Stop a container,
+it's gone. No restarts, no config files.
 
 Designed to sit behind [Traefik](https://traefik.io) or similar reverse proxies. Dropping this proxy
 into a running stack should take about 5 minutes.
