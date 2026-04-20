@@ -21,12 +21,5 @@ jobs:
           # Keep the 10 most recent nightly-<sha> tagged versions.
           # Semver releases, the moving "nightly" tag, and "latest" are excluded.
           min-versions-to-keep: 10
-          ignore-versions: '^(v\d+.*|nightly$|nightly-[0-9a-f]{7}.*|latest)$'
+          ignore-versions: '^(v\d+.*|nightly$|nightly-[0-9a-f]{7}.*|latest|sha256-[0-9a-f]+)$'
 
-      - name: Delete untagged platform manifests
-        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5
-        with:
-          package-name: lw-inference-proxy
-          package-type: container
-          delete-only-untagged-versions: true
-          min-versions-to-keep: 0
