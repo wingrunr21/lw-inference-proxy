@@ -18,6 +18,8 @@ import (
 	"github.com/wingrunr21/lw-inference-proxy/internal/telemetry"
 )
 
+var version = "dev"
+
 func main() {
 	doHealthCheck := flag.Bool("healthcheck", false, "run a health check against the running proxy and exit")
 	flag.Parse()
@@ -28,6 +30,7 @@ func main() {
 	}
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	slog.Info("starting lw-inference-proxy", "version", version)
 
 	cfg := config.Load()
 
