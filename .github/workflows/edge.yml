@@ -64,9 +64,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Disabled until repo is public (GHAS requires public repo or paid license)
       - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
-        if: false
         with:
           image-ref: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
           format: sarif
@@ -75,7 +73,6 @@ jobs:
           exit-code: '1'
 
       - uses: github/codeql-action/upload-sarif@ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a # v3
-        if: false
         with:
           sarif_file: trivy-results.sarif
 
