@@ -22,12 +22,12 @@ type BackendEntry struct {
 	status   atomic.Int32
 }
 
-func (e *BackendEntry) IncrInFlight() { e.inflight.Add(1) }
-func (e *BackendEntry) DecrInFlight() { e.inflight.Add(-1) }
+func (e *BackendEntry) IncrInFlight()   { e.inflight.Add(1) }
+func (e *BackendEntry) DecrInFlight()   { e.inflight.Add(-1) }
 func (e *BackendEntry) InFlight() int64 { return e.inflight.Load() }
 
-func (e *BackendEntry) IsDraining() bool        { return e.status.Load() == statusDraining }
-func (e *BackendEntry) SetDraining()             { e.status.Store(statusDraining) }
+func (e *BackendEntry) IsDraining() bool { return e.status.Load() == statusDraining }
+func (e *BackendEntry) SetDraining()     { e.status.Store(statusDraining) }
 
 // TryAcquire atomically checks draining status and increments the in-flight counter.
 // Returns false if the backend is draining.
@@ -110,17 +110,6 @@ func (r *Router) Models() []json.RawMessage {
 		}
 	}
 	return models
-}
-
-// Snapshot returns a shallow copy of all entries, used for metrics callbacks.
-func (r *Router) Snapshot() map[string]*BackendEntry {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	snap := make(map[string]*BackendEntry, len(r.entries))
-	for k, v := range r.entries {
-		snap[k] = v
-	}
-	return snap
 }
 
 // Count returns the number of entries (including draining).

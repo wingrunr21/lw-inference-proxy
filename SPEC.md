@@ -20,14 +20,14 @@ gets out of the way. No load balancing, no governance, no authentication.
 - Automatic routing based on the `model` field in request bodies
 - Fully dynamic: add/remove backends by starting/stopping Docker containers
 - Zero model configuration in compose files — model names discovered from backends
-- Observability via OpenTelemetry (optional, implicit)
 - High throughput, low overhead — streaming responses pass through without buffering
 
 ## Non-Goals
 
 - Load balancing across multiple instances of the same model
 - Authentication / authorization
-- Request logging beyond OTel spans
+- Request logging
+- Metrics or tracing of its own (backends export their own; the proxy would only echo them)
 - Managing container lifecycle (start/stop)
 - TLS termination (delegated to elsewhere)
 - ACME (such as LetsEncrypt) (delegated to elsewhere)
@@ -147,7 +147,7 @@ model_id (string) → BackendEntry {
 
 **Model name collision:** If a newly registered model name is already present in the
 routing table, the new entry wins (last-in). The displaced entry's in-flight requests
-complete normally. A warning is emitted (log + OTel event).
+complete normally. A warning is logged.
 
 **Model name source:** The `id` field from each entry in the `data` array of the
 backend's `/v1/models` response is the canonical routing key. All models exposed by a
@@ -241,53 +241,17 @@ configuration files.
 |---|---|---|
 | `PROXY_PORT` | `8080` | Port the proxy listens on |
 | `PROXY_DRAIN_TIMEOUT` | `60s` | Max time to wait for in-flight requests on backend removal |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP endpoint. If unset, OTel is disabled (no-op) |
-| `OTEL_SERVICE_NAME` | `inference-proxy` | OTel service name |
-
-OTel is implicitly enabled by the presence of `OTEL_EXPORTER_OTLP_ENDPOINT`. No
-separate enable flag. When disabled, all OTel calls resolve to no-ops via the
-standard Go OTel SDK no-op provider.
-
----
-
-## OpenTelemetry Instrumentation
-
-When enabled, the following signals are emitted:
-
-### Traces
-
-- **Span per proxied request**
-  - Attributes: `model`, `backend_url`, `http.method`, `http.status_code`, `streaming` (bool)
-  - Events: routing table miss, backend draining
-
-### Metrics
-
-| Metric | Type | Description |
-|---|---|---|
-| `proxy.requests.total` | Counter | Total requests, labeled by `model`, `status_code` |
-| `proxy.request.duration` | Histogram | End-to-end request latency, labeled by `model` |
-| `proxy.backend.inflight` | Gauge | In-flight requests per backend (`model` label) |
-| `proxy.backends.active` | Gauge | Number of live backends in routing table |
-| `proxy.routing_table.updates` | Counter | Routing table add/remove events, labeled by `action` |
-
-### Events (on spans)
-
-- Backend registered (model name, container ID, backend URL)
-- Backend removed (reason: stop / unhealthy / collision)
-- Model name collision (displaced model, new container ID)
-
 ---
 
 ## Implementation Stack
 
 | Concern | Choice | Rationale |
 |---|---|---|
-| Language | Go | Docker SDK, OTel ecosystem, `httputil.ReverseProxy` |
+| Language | Go | Docker SDK, `httputil.ReverseProxy` |
 | HTTP server | `net/http` | Standard, streaming-correct, sufficient performance |
 | HTTP proxy | `httputil.ReverseProxy` | Streams request body and response without buffering; handles SSE, hop-by-hop headers correctly |
 | Body peek | `encoding/json.Decoder` + `io.MultiReader` | Streaming model field extraction; only prefix bytes held in memory |
 | Docker integration | `github.com/docker/docker/client` | Official SDK, event stream support |
-| OTel | `go.opentelemetry.io/otel` | Standard Go OTel SDK, no-op provider when unconfigured |
 | Routing table | `sync.RWMutex` + `map` | Simple, correct; no lock-free complexity needed |
 | In-flight tracking | `atomic.Int64` per backend | Zero-contention counter |
 
@@ -304,8 +268,6 @@ services:
     environment:
       PROXY_PORT: "8080"
       PROXY_DRAIN_TIMEOUT: "60s"
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
-      OTEL_SERVICE_NAME: "inference-proxy"
     labels:
       traefik.enable: "true"
       traefik.http.routers.inference.rule: "PathPrefix(`/v1`)"

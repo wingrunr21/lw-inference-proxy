@@ -15,7 +15,6 @@ import (
 	"github.com/wingrunr21/lw-inference-proxy/internal/docker"
 	"github.com/wingrunr21/lw-inference-proxy/internal/proxy"
 	"github.com/wingrunr21/lw-inference-proxy/internal/router"
-	"github.com/wingrunr21/lw-inference-proxy/internal/telemetry"
 )
 
 var version = "dev"
@@ -36,12 +35,6 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	otelShutdown, err := telemetry.Setup(ctx, cfg)
-	if err != nil {
-		slog.Error("telemetry setup failed", "error", err)
-		os.Exit(1)
-	}
 
 	r := router.New()
 
@@ -82,9 +75,6 @@ func main() {
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("server shutdown error", "error", err)
-	}
-	if err := otelShutdown(shutdownCtx); err != nil {
-		slog.Error("otel shutdown error", "error", err)
 	}
 
 	slog.Info("shutdown complete")

@@ -89,15 +89,6 @@ Configuration goes on the **proxy container** as environment variables.
 |---|---|---|
 | `PROXY_PORT` | `8080` | Port the proxy listens on |
 | `PROXY_DRAIN_TIMEOUT` | `60s` | How long to wait for in-flight requests when a backend is removed |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP endpoint. Omit to disable telemetry entirely |
-| `OTEL_SERVICE_NAME` | `inference-proxy` | Service name in traces and metrics |
-
-### OpenTelemetry
-
-Set `OTEL_EXPORTER_OTLP_ENDPOINT` and you get traces (one span per request with model name,
-backend URL, status code, and whether it was a streaming response) plus metrics
-(`proxy.requests.total`, `proxy.request.duration`, `proxy.backend.inflight`,
-`proxy.backends.active`). Leave it unset and there's zero OTel overhead.
 
 ## Routing behavior
 

@@ -17,7 +17,7 @@ import (
 )
 
 func newTestHandler(r *router.Router) *proxy.Handler {
-	cfg := &config.Config{Port: "8080", OTelService: "test"}
+	cfg := &config.Config{Port: "8080"}
 	return proxy.NewHandler(cfg, r)
 }
 
